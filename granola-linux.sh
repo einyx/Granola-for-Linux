@@ -143,6 +143,64 @@ for item in binding.gyp deps src; do
   fi
 done
 
+# Electron 45+ (V8 13+) changed several native APIs used by
+# better-sqlite3-multiple-ciphers v12.x. Patch the npm source when present so
+# it builds against newer Electron headers.
+python3 - "$WORK/bs3" <<'PY'
+import pathlib, sys
+root = pathlib.Path(sys.argv[1])
+
+def patch(path, old, new):
+    p = root / path
+    if not p.exists():
+        return
+    text = p.read_text()
+    if old in text and new not in text:
+        p.write_text(text.replace(old, new))
+
+patch('src/util/macros.cpp',
+      '#if defined(V8_MAJOR_VERSION) && V8_MAJOR_VERSION >= 13\n'
+      '// v8::Object::GetPrototype has been deprecated. See http://crbug.com/333672197\n'
+      '#define GET_PROTOTYPE(obj) ((obj)->GetPrototypeV2())\n'
+      '#else\n'
+      '#define GET_PROTOTYPE(obj) ((obj)->GetPrototype())\n'
+      '#endif',
+      '#if defined(V8_MAJOR_VERSION) && V8_MAJOR_VERSION >= 13\n'
+      '// Electron 45+ exposes GetPrototype() again.\n'
+      '#define GET_PROTOTYPE(obj) ((obj)->GetPrototype())\n'
+      '#else\n'
+      '#define GET_PROTOTYPE(obj) ((obj)->GetPrototype())\n'
+      '#endif')
+
+patch('src/util/macros.cpp',
+      '#if defined(V8_MAJOR_VERSION) && V8_MAJOR_VERSION >= 13\n'
+      '#define PROPERTY_HOLDER(info) (info).HolderV2()\n'
+      '#else\n'
+      '#define PROPERTY_HOLDER(info) (info).This()\n'
+      '#endif',
+      '#if defined(V8_MAJOR_VERSION) && V8_MAJOR_VERSION >= 13\n'
+      '#define PROPERTY_HOLDER(info) (info).Holder()\n'
+      '#else\n'
+      '#define PROPERTY_HOLDER(info) (info).This()\n'
+      '#endif')
+
+patch('src/util/macros.cpp',
+      '#define OnlyAddon static_cast<Addon*>(info.Data().As<v8::External>()->Value())',
+      '#if defined(V8_MAJOR_VERSION) && V8_MAJOR_VERSION >= 13\n'
+      '#define OnlyAddon static_cast<Addon*>(info.Data().As<v8::External>()->Value(v8::kExternalPointerTypeTagDefault))\n'
+      '#else\n'
+      '#define OnlyAddon static_cast<Addon*>(info.Data().As<v8::External>()->Value())\n'
+      '#endif')
+
+patch('src/better_sqlite3.cpp',
+      '\tv8::Local<v8::External> data = v8::External::New(isolate, addon);',
+      '#if defined(V8_MAJOR_VERSION) && V8_MAJOR_VERSION >= 13\n'
+      '\tv8::Local<v8::External> data = v8::External::New(isolate, addon, v8::kExternalPointerTypeTagDefault);\n'
+      '#else\n'
+      '\tv8::Local<v8::External> data = v8::External::New(isolate, addon);\n'
+      '#endif')
+PY
+
 ( cd "$WORK/bs3" && CC="$CC" CXX="$CXX" npx --yes node-gyp rebuild --release \
     --runtime=electron --target="$EL_VER" --arch=x64 \
     --dist-url=https://electronjs.org/headers ) >"$WORK/build.log" 2>&1 \
