@@ -15,22 +15,6 @@ That is it. The script installs to `~/Applications/granola`, adds a desktop entr
 
 Set `INSTALL_DIR=` to install somewhere else. You need x86-64 and g++ 11 or newer. Tested on Pop!\_OS (Ubuntu 20.04 base, glibc 2.32) with Granola 7.452.1 and Electron 42.7.0.
 
-## Install Granola + iCloud Keychain in one go
-
-This repo includes [iCloud Keychain for Linux](iCloud-Keychain-for-Linux/) as a git submodule. To install both tools together:
-
-```bash
-git clone --recurse-submodules https://github.com/einyx/Granola-for-Linux.git
-cd Granola-for-Linux
-./install-all.sh "/path/to/Granola.dmg"
-```
-
-If you already cloned without submodules, `install-all.sh` will initialize them automatically.
-
-- Pass the Granola `.dmg` to install Granola and `icp` in one run.
-- Omit the `.dmg` to install only `icp` (iCloud Keychain for Linux): `./install-all.sh`
-- `icp` requires a configured Anisette v3 server (see the [iCloud Keychain README](iCloud-Keychain-for-Linux/README.md)). A Rust option is [SideStore/omnisette-server](https://github.com/SideStore/omnisette-server). Set `ICP_ANISETTE_URL` before `icp login`.
-
 ## What works
 
 | | |
