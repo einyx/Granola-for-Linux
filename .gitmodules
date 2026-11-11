@@ -1,0 +1,3 @@
+[submodule "iCloud-Keychain-for-Linux"]
+	path = iCloud-Keychain-for-Linux
+	url = https://github.com/einyx/iCloud-Keychain-for-Linux.git
