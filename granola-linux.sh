@@ -3,8 +3,9 @@
 set -euo pipefail
 
 DMG="${1:-}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/Applications/granola}"
-CACHE_DIR="${CACHE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.cache}"
+CACHE_DIR="${CACHE_DIR:-$SCRIPT_DIR/.cache}"
 DESKTOP_FILE="${DESKTOP_FILE:-$HOME/.local/share/applications/granola.desktop}"
 RES="Granola/Granola.app/Contents/Resources"
 
@@ -123,86 +124,35 @@ step "Rebuilding better-sqlite3-multiple-ciphers for Linux"
 # npm builds do not have it, so dropping in a stock prebuilt binary gets you a
 # window that dies with "r.updateHook is not a function".
 #
-# Their full C++ source is inside app.asar.unpacked, so build *that*. Only
-# binding.gyp is missing from the bundle; take it from the matching npm release.
+# Granola used to ship the full C++ source in app.asar.unpacked. It no longer
+# does, so the source comes from the matching npm release and the missing
+# updateHook() is patched back in.
 BS3="$INSTALL_DIR/resources/app.asar.unpacked/node_modules/better-sqlite3-multiple-ciphers"
 BS3_VER="$(node -p "require('$BS3/package.json').version")"
-info "building Granola's fork of v$BS3_VER from source"
+info "building better-sqlite3-multiple-ciphers v$BS3_VER from source"
 
 cp -r "$BS3" "$WORK/bs3"
 ( cd "$WORK" && npm pack "better-sqlite3-multiple-ciphers@$BS3_VER" --silent >/dev/null \
     && tar xzf better-sqlite3-multiple-ciphers-*.tgz ) || die "could not fetch build files from npm"
 
-# Newer Granola bundles may omit binding.gyp and/or the deps/src tree from
-# app.asar.unpacked. Pull whatever is missing from the matching npm release so
-# node-gyp can configure, while keeping Granola's bundled JS/lib and any forked
-# source that is present.
+# Pull whatever the bundle is missing from the matching npm release so node-gyp
+# can configure. Granola's own JS and lib are kept either way, because those
+# carry the updateHook() wrapper the renderer calls.
 for item in binding.gyp deps src; do
   if [[ -e "$WORK/package/$item" && ! -e "$WORK/bs3/$item" ]]; then
     cp -r "$WORK/package/$item" "$WORK/bs3/"
   fi
 done
 
-# Electron 45+ (V8 13+) changed several native APIs used by
-# better-sqlite3-multiple-ciphers v12.x. Patch the npm source when present so
-# it builds against newer Electron headers.
-python3 - "$WORK/bs3" <<'PY'
-import pathlib, sys
-root = pathlib.Path(sys.argv[1])
+# The npm source has no updateHook(), and Electron 45 changed a few V8 APIs
+# that the 12.x line still uses. One script fixes both.
+python3 "$SCRIPT_DIR/patch-update-hook.py" "$WORK/bs3" \
+  || die "could not patch the sqlite source"
 
-def patch(path, old, new):
-    p = root / path
-    if not p.exists():
-        return
-    text = p.read_text()
-    if old in text and new not in text:
-        p.write_text(text.replace(old, new))
-
-patch('src/util/macros.cpp',
-      '#if defined(V8_MAJOR_VERSION) && V8_MAJOR_VERSION >= 13\n'
-      '// v8::Object::GetPrototype has been deprecated. See http://crbug.com/333672197\n'
-      '#define GET_PROTOTYPE(obj) ((obj)->GetPrototypeV2())\n'
-      '#else\n'
-      '#define GET_PROTOTYPE(obj) ((obj)->GetPrototype())\n'
-      '#endif',
-      '#if defined(V8_MAJOR_VERSION) && V8_MAJOR_VERSION >= 13\n'
-      '// Electron 45+ exposes GetPrototype() again.\n'
-      '#define GET_PROTOTYPE(obj) ((obj)->GetPrototype())\n'
-      '#else\n'
-      '#define GET_PROTOTYPE(obj) ((obj)->GetPrototype())\n'
-      '#endif')
-
-patch('src/util/macros.cpp',
-      '#if defined(V8_MAJOR_VERSION) && V8_MAJOR_VERSION >= 13\n'
-      '#define PROPERTY_HOLDER(info) (info).HolderV2()\n'
-      '#else\n'
-      '#define PROPERTY_HOLDER(info) (info).This()\n'
-      '#endif',
-      '#if defined(V8_MAJOR_VERSION) && V8_MAJOR_VERSION >= 13\n'
-      '#define PROPERTY_HOLDER(info) (info).Holder()\n'
-      '#else\n'
-      '#define PROPERTY_HOLDER(info) (info).This()\n'
-      '#endif')
-
-patch('src/util/macros.cpp',
-      '#define OnlyAddon static_cast<Addon*>(info.Data().As<v8::External>()->Value())',
-      '#if defined(V8_MAJOR_VERSION) && V8_MAJOR_VERSION >= 13\n'
-      '#define OnlyAddon static_cast<Addon*>(info.Data().As<v8::External>()->Value(v8::kExternalPointerTypeTagDefault))\n'
-      '#else\n'
-      '#define OnlyAddon static_cast<Addon*>(info.Data().As<v8::External>()->Value())\n'
-      '#endif')
-
-patch('src/better_sqlite3.cpp',
-      '\tv8::Local<v8::External> data = v8::External::New(isolate, addon);',
-      '#if defined(V8_MAJOR_VERSION) && V8_MAJOR_VERSION >= 13\n'
-      '\tv8::Local<v8::External> data = v8::External::New(isolate, addon, v8::kExternalPointerTypeTagDefault);\n'
-      '#else\n'
-      '\tv8::Local<v8::External> data = v8::External::New(isolate, addon);\n'
-      '#endif')
-PY
-
+# node-gyp skips the build when a prebuilt binary for the host is present.
+# force_build makes it compile from source, which is the whole point here.
 ( cd "$WORK/bs3" && CC="$CC" CXX="$CXX" npx --yes node-gyp rebuild --release \
-    --runtime=electron --target="$EL_VER" --arch=x64 \
+    --runtime=electron --target="$EL_VER" --arch=x64 --force_build=1 \
     --dist-url=https://electronjs.org/headers ) >"$WORK/build.log" 2>&1 \
   || { tail -30 "$WORK/build.log"; die "native build failed (full log: $WORK/build.log)"; }
 

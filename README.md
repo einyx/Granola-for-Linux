@@ -53,9 +53,28 @@ If you would rather not run the script, the conversion takes six steps:
 3. Unzip the Linux runtime into your install folder and delete `resources/default_app.asar`.
 4. Copy `app.asar`, `app.asar.unpacked`, and `icons/` from the bundle into the runtime's `resources/`. Skip every Mac binary, since they all sit behind `darwin` checks.
 5. Patch the platform string inside `app.asar` so it reports `Windows`. Granola's API returns a 500 error for `platform=linux`, so sign-in fails without this.
-6. Rebuild `better-sqlite3-multiple-ciphers` from the C++ source inside `app.asar.unpacked` using g++ 11 or newer. Granola's version adds an `updateHook()` that no public build has.
+6. Rebuild `better-sqlite3-multiple-ciphers` from source using g++ 11 or newer. Granola's fork adds an `updateHook()` that no public npm build has, so the source is patched before it is compiled.
 
 Four of those six fail with errors that do not point at the real cause. `granola-linux.sh` has the exact commands, with comments explaining each one.
+
+## The updateHook patch
+
+Granola's renderer calls `updateHook()` on the database when it starts up:
+
+```
+TypeError: this[cppdb].updateHook is not a function
+```
+
+The method lives in Granola's own fork of `better-sqlite3-multiple-ciphers`. Older builds shipped that fork's C++ source inside `app.asar.unpacked`, so it could be compiled as is. Newer builds only ship the compiled macOS binary, so the source has to come from npm, and npm does not have the method.
+
+`patch-update-hook.py` adds it back. It wraps SQLite's own `sqlite3_update_hook()`, which fires for every inserted, updated and deleted row. The script also fixes the V8 API changes that Electron 45 needs.
+
+Two details matter for the build to actually produce a binary:
+
+- **Use the exact version Granola bundles.** The JS in `app.asar` calls into the native addon, and a different major version of the addon has a different interface.
+- **Pass `--force_build=1` to node-gyp.** The addon skips compiling when a prebuilt binary for the host is present, which silently produces a binary with no `updateHook()` in it.
+
+The install script ends with a smoke test that opens an encrypted database, writes a row and checks that the hook fires. It fails the install rather than shipping a broken binary.
 
 ## Notes
 

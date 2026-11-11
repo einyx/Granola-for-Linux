@@ -1,0 +1,15 @@
+# Downloads and build artifacts
+*.dmg
+*.zip
+.cache/
+
+# Granola's proprietary app payload
+app.asar
+app.asar.unpacked/
+
+# The macOS icon we extract from the dmg
+icon.icns
+
+# Python bytecode
+__pycache__/
+*.pyc
