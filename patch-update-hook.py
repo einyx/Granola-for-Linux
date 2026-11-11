@@ -15,6 +15,11 @@ The hook is implemented on top of SQLite's own sqlite3_update_hook(). The
 callback fires for every row that is inserted, updated or deleted, and
 receives the operation code, the rowid and the table name.
 
+The table name matters. Granola's sqlite worker collects it to tell the
+renderer which tables changed, and the renderer uses those names to decide
+which live queries to re-run. A hook that fires but reports null as the
+table name leaves the cache silently stale.
+
 The addon has two flavours of the same API, so the patch adapts to whichever
 one it finds: the V8 based 12.x line that Granola bundles, and the N-API
 based 13.x line.
@@ -31,7 +36,6 @@ CPP_UPDATEHOOK_V8 = """
 // and the rowid to the JavaScript function the user registered.
 static void UpdateHookTrampoline(void* context, int operation, char const* database_name, char const* table_name, sqlite3_int64 rowid) {
 	((void)database_name);
-	((void)table_name);
 	Database* db = static_cast<Database*>(context);
 	if (!db) return;
 
@@ -47,7 +51,15 @@ static void UpdateHookTrampoline(void* context, int operation, char const* datab
 	v8::Local<v8::Value> args[3];
 	args[0] = v8::Number::New(isolate, operation);
 	args[1] = v8::Number::New(isolate, static_cast<double>(rowid));
-	args[2] = v8::Null(isolate);
+	// The table name is the third argument. Granola's sqlite worker collects
+	// it to tell the renderer which tables changed, and the renderer uses
+	// those names to decide which live queries to re-run. Passing null here
+	// silently breaks that invalidation.
+	if (table_name) {
+		args[2] = v8::String::NewFromUtf8(isolate, table_name).ToLocalChecked();
+	} else {
+		args[2] = v8::Null(isolate);
+	}
 
 	// A throw inside the hook must not take the whole process down, and it
 	// must not leave a pending exception behind for the next call.
@@ -87,7 +99,6 @@ CPP_UPDATEHOOK_NAPI = """
 // and the rowid to the JavaScript function the user registered.
 static void UpdateHookTrampoline(void* context, int operation, char const* database_name, char const* table_name, sqlite3_int64 rowid) {
 	((void)database_name);
-	((void)table_name);
 	Database* db = static_cast<Database*>(context);
 	if (!db) return;
 
@@ -104,7 +115,15 @@ static void UpdateHookTrampoline(void* context, int operation, char const* datab
 	napi_value args[3];
 	args[0] = Napi::Number::New(env, operation);
 	args[1] = Napi::Number::New(env, static_cast<double>(rowid));
-	args[2] = env.Null();
+	// The table name is the third argument. Granola's sqlite worker collects
+	// it to tell the renderer which tables changed, and the renderer uses
+	// those names to decide which live queries to re-run. Passing null here
+	// silently breaks that invalidation.
+	if (table_name) {
+		args[2] = Napi::String::New(env, table_name);
+	} else {
+		args[2] = env.Null();
+	}
 
 	// A throw inside the hook must not take the whole process down, and it
 	// must not leave a pending exception behind for the next call. SafeCall

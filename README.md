@@ -39,7 +39,7 @@ If you would rather not run the script, the conversion takes six steps:
 5. Patch the platform string inside `app.asar` so it reports `Windows`. Granola's API returns a 500 error for `platform=linux`, so sign-in fails without this.
 6. Rebuild `better-sqlite3-multiple-ciphers` from source using g++ 11 or newer. Granola's fork adds an `updateHook()` that no public npm build has, so the source is patched before it is compiled.
 
-Four of those six fail with errors that do not point at the real cause. `granola-linux.sh` has the exact commands, with comments explaining each one.
+Five of those six fail with errors that do not point at the real cause. `granola-linux.sh` has the exact commands, with comments explaining each one.
 
 ## The updateHook patch
 
@@ -58,7 +58,29 @@ Two details matter for the build to actually produce a binary:
 - **Use the exact version Granola bundles.** The JS in `app.asar` calls into the native addon, and a different major version of the addon has a different interface.
 - **Pass `--force_build=1` to node-gyp.** The addon skips compiling when a prebuilt binary for the host is present, which silently produces a binary with no `updateHook()` in it.
 
-The install script ends with a smoke test that opens an encrypted database, writes a row and checks that the hook fires. It fails the install rather than shipping a broken binary.
+The hook has to report the name of the table that changed. Granola's database worker collects those names and sends them to the renderer, which uses them to decide which live queries to re-run. A hook that fires but reports `null` leaves the cache silently stale.
+
+## The tables_used patch
+
+Granola's cache layer also asks SQLite which tables a query touches. It does that with a table-valued function that only exists in SQLite builds compiled with `SQLITE_ENABLE_BYTECODE_VTAB`:
+
+```sql
+SELECT name, wr FROM tables_used('SELECT * FROM notes')
+```
+
+`wr` is 1 when the statement writes to the table. The renderer refuses to register a live query that writes to a table it also reads, and uses the table names to decide what to watch for changes.
+
+The public npm release of `better-sqlite3-multiple-ciphers` does not set that flag, so a binary built from it throws while the first screen renders:
+
+```
+Error: no such table: tables_used
+```
+
+The app catches that, logs it as a react error and shows its error boundary instead of the UI. Granola's own macOS build has the flag, and so does the WebAssembly SQLite the app ships as a fallback, which is why only the native module on Linux is affected.
+
+The install script adds `SQLITE_ENABLE_BYTECODE_VTAB` to the SQLite compile flags. Without it the app starts and then falls over on the first screen, with an error that names a table rather than a missing feature.
+
+The install script ends with a smoke test that opens an encrypted database, writes a row and checks that the hook fires and that `tables_used()` returns the right table. It fails the install rather than shipping a broken binary.
 
 ## Notes
 

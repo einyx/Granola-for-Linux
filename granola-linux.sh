@@ -144,6 +144,47 @@ for item in binding.gyp deps src; do
   fi
 done
 
+# The npm release compiles SQLite without SQLITE_ENABLE_BYTECODE_VTAB, which
+# is the flag that registers SQLite's tables_used() table-valued function.
+# Granola's renderer calls it while the first screen renders, so without the
+# flag the app throws "no such table: tables_used" and puts its error
+# boundary on screen instead of the UI.
+#
+# The flag has to go into the SQLite compile defines. Passing it through
+# GYP_DEFINES does not work: gyp replaces the target's define list rather
+# than adding to it, and the amalgamation is compiled without the flag.
+python3 - "$WORK/bs3/deps" <<'PYEOF' || die "could not enable tables_used()"
+import pathlib, sys
+
+deps = pathlib.Path(sys.argv[1])
+flag = "SQLITE_ENABLE_BYTECODE_VTAB"
+
+def add_flag(text):
+    """Return the text with the compile flag in it."""
+    if flag in text:
+        return text
+    anchor = "'SQLITE_ENABLE_COLUMN_METADATA',"
+    if anchor in text:
+        return text.replace(anchor, "'%s',\n    %s" % (flag, anchor), 1)
+    # No anchor, so append to the end of the define list.
+    end = text.rindex("]")
+    return text[:end] + "    '%s',\n  " % flag + text[end:]
+
+defines = deps / "defines.gypi"
+gyp = deps / "sqlite3.gyp"
+
+if defines.exists() and "defines.gypi" in gyp.read_text():
+    defines.write_text(add_flag(defines.read_text()))
+elif gyp.exists():
+    # This build does not use defines.gypi, so the flag goes into the gyp
+    # target's define list instead.
+    gyp.write_text(add_flag(gyp.read_text()))
+else:
+    sys.exit("no SQLite build files under %s" % deps)
+
+print("    enabled tables_used() in SQLite")
+PYEOF
+
 # The npm source has no updateHook(), and Electron 45 changed a few V8 APIs
 # that the 12.x line still uses. One script fixes both.
 python3 "$SCRIPT_DIR/patch-update-hook.py" "$WORK/bs3" \
@@ -198,13 +239,23 @@ ELECTRON_RUN_AS_NODE=1 NODE_PATH="$INSTALL_DIR/resources/app.asar/node_modules" 
     db.pragma(\"key='smoketest'\");
     db.exec('CREATE TABLE t(a)');
     let fired = false;
-    db.updateHook(() => { fired = true; });
+    let changed = null;
+    db.updateHook((op, rowid, table) => { fired = true; changed = table; });
     db.prepare('INSERT INTO t VALUES (1)').run();
     if (db.prepare('SELECT count(*) c FROM t').get().c !== 1) throw new Error('insert failed');
     if (!fired) throw new Error('updateHook did not fire');
+    if (changed !== 't') throw new Error('updateHook reported table ' + changed + ' instead of t');
+
+    // tables_used() is a table-valued function that SQLite only registers
+    // when it is compiled with SQLITE_ENABLE_BYTECODE_VTAB. Granola's
+    // renderer calls it while the first screen renders, and without it the
+    // app shows its error boundary instead of the UI.
+    const used = db.prepare(\"SELECT DISTINCT COALESCE(m.tbl_name, tu.name) as name, tu.wr FROM tables_used(?) tu LEFT JOIN sqlite_master m ON tu.type = 'index' AND m.type = 'index' AND m.name = tu.name WHERE tu.type IN ('table', 'index')\").all('SELECT * FROM t');
+    if (!used.some(r => r.name === 't')) throw new Error('tables_used() did not report table t');
+
     db.close();
   " || die "smoke test failed, the app would not start"
-info "encrypted database + updateHook both work"
+info "encrypted database, updateHook and tables_used() all work"
 
 printf '\n\033[32m✓ Granola %s is installed.\033[0m\n' "$APP_VER"
 printf '  Launch it from your application menu, or run:\n    %s\n\n' "$INSTALL_DIR/granola.sh"
