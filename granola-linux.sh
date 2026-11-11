@@ -131,8 +131,17 @@ info "building Granola's fork of v$BS3_VER from source"
 
 cp -r "$BS3" "$WORK/bs3"
 ( cd "$WORK" && npm pack "better-sqlite3-multiple-ciphers@$BS3_VER" --silent >/dev/null \
-    && tar xzf better-sqlite3-multiple-ciphers-*.tgz ) || die "could not fetch binding.gyp from npm"
-cp "$WORK/package/binding.gyp" "$WORK/bs3/"
+    && tar xzf better-sqlite3-multiple-ciphers-*.tgz ) || die "could not fetch build files from npm"
+
+# Newer Granola bundles may omit binding.gyp and/or the deps/src tree from
+# app.asar.unpacked. Pull whatever is missing from the matching npm release so
+# node-gyp can configure, while keeping Granola's bundled JS/lib and any forked
+# source that is present.
+for item in binding.gyp deps src; do
+  if [[ -e "$WORK/package/$item" && ! -e "$WORK/bs3/$item" ]]; then
+    cp -r "$WORK/package/$item" "$WORK/bs3/"
+  fi
+done
 
 ( cd "$WORK/bs3" && CC="$CC" CXX="$CXX" npx --yes node-gyp rebuild --release \
     --runtime=electron --target="$EL_VER" --arch=x64 \
